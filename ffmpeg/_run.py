@@ -3,6 +3,7 @@ from .dag import get_outgoing_edges, topo_sort
 from ._utils import basestring, convert_kwargs_to_cmd_line_args
 from builtins import str
 from functools import reduce
+import asyncio
 import copy
 import operator
 import subprocess
@@ -296,6 +297,111 @@ def run_async(
     )
 
 
+
+@output_operator()
+async def run_asyncio(
+    stream_spec,
+    cmd='ffmpeg',
+    pipe_stdin=False,
+    pipe_stdout=False,
+    pipe_stderr=False,
+    quiet=False,
+    overwrite_output=False,
+    cwd=None,
+):
+    """Create an asyncio awaitable that invokes ffmpeg for the supplied node graph.
+
+    Args:
+        pipe_stdin: if True, connect pipe to subprocess stdin (to be
+            used with ``pipe:`` ffmpeg inputs).
+        pipe_stdout: if True, connect pipe to subprocess stdout (to be
+            used with ``pipe:`` ffmpeg outputs).
+        pipe_stderr: if True, connect pipe to subprocess stderr.
+        quiet: shorthand for setting ``capture_stdout`` and
+            ``capture_stderr``.
+        **kwargs: keyword-arguments passed to ``get_args()`` (e.g.
+            ``overwrite_output=True``).
+
+    Returns:
+        An `asyncio.subprocess.Process`_ object representing the child process.
+
+    Examples:
+        Run and stream input::
+
+            process = await (
+                ffmpeg
+                .input('pipe:', format='rawvideo', pix_fmt='rgb24', s='{}x{}'.format(width, height))
+                .output(out_filename, pix_fmt='yuv420p')
+                .overwrite_output()
+                .run_asyncio(pipe_stdin=True)
+            )
+            await process.communicate(input=input_data)
+
+        Run and capture output::
+
+            process = await (
+                ffmpeg
+                .input(in_filename)
+                .output('pipe:', format='rawvideo', pix_fmt='rgb24')
+                .run_asyncio(pipe_stdout=True, pipe_stderr=True)
+            )
+            out, err = await process.communicate()
+
+        Process video frame-by-frame using numpy::
+
+            process1 = await (
+                ffmpeg
+                .input(in_filename)
+                .output('pipe:', format='rawvideo', pix_fmt='rgb24')
+                .run_asyncio(pipe_stdout=True)
+            )
+
+            process2 = await (
+                ffmpeg
+                .input('pipe:', format='rawvideo', pix_fmt='rgb24', s='{}x{}'.format(width, height))
+                .output(out_filename, pix_fmt='yuv420p')
+                .overwrite_output()
+                .run_asyncio(pipe_stdin=True)
+            )
+
+            while True:
+                in_bytes = process1.stdout.read(width * height * 3)
+                if not in_bytes:
+                    break
+                in_frame = (
+                    np
+                    .frombuffer(in_bytes, np.uint8)
+                    .reshape([height, width, 3])
+                )
+                out_frame = in_frame * 0.3
+                await process2.stdin.write(
+                    frame
+                    .astype(np.uint8)
+                    .tobytes()
+                )
+
+            await process2.stdin.close()
+            await process1.wait()
+            await process2.wait()
+
+    .. _asyncio.subprocess.Process: https://docs.python.org/3/library/asyncio-subprocess.html#asyncio.subprocess.Process
+    """
+    args = compile(stream_spec, cmd, overwrite_output=overwrite_output)
+    stdin_stream = subprocess.PIPE if pipe_stdin else None
+    stdout_stream = subprocess.PIPE if pipe_stdout else None
+    stderr_stream = subprocess.PIPE if pipe_stderr else None
+    if quiet:
+        stderr_stream = subprocess.STDOUT
+        stdout_stream = subprocess.DEVNULL
+    return await asyncio.create_subprocess_exec(
+        args,
+        stdin=stdin_stream,
+        stdout=stdout_stream,
+        stderr=stderr_stream,
+        cwd=cwd,
+    )
+
+
 @output_operator()
 def run(
     stream_spec,
@@ -344,4 +450,5 @@ __all__ = [
     'get_args',
     'run',
     'run_async',
+    'run_asyncio',
 ]
